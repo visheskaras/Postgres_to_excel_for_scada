@@ -1,287 +1,292 @@
 import flet as ft
+import os
+import threading
+from config_loader import ConfigLoader
 from postgres_client import PostgreSQLClient, PostgreSQLConfig
 from excel_exporter import ExcelExporter, ExcelExportConfig
-from config_loader import ConfigLoader
 import pandas as pd
-import os
-from datetime import datetime
-from typing import List
 
-class PostgreSQLExporterApp:
-    def __init__(self, page: ft.Page):
-        self.page = page
-        self.config_loader = ConfigLoader()
-        self.config = None
-        self.available_views: List[str] = []
-        
-        # Refs
-        self.db_host = ft.Ref[ft.TextField]()
-        self.db_port = ft.Ref[ft.TextField]()
-        self.db_name = ft.Ref[ft.TextField]()
-        self.db_user = ft.Ref[ft.TextField]()
-        self.db_password = ft.Ref[ft.TextField]()
-        self.templates_folder = ft.Ref[ft.TextField]()
-        self.output_folder = ft.Ref[ft.TextField]()
-        self.view_dropdown = ft.Ref[ft.Dropdown]()
-        self.status_text = ft.Ref[ft.Text]()
-        self.progress_ring = ft.Ref[ft.ProgressRing]()
-        self.export_button = ft.Ref[ft.ElevatedButton]()
-        
-        self.file_picker_templates = ft.FilePicker(on_result=self.pick_templates_folder_result)
-        self.file_picker_output = ft.FilePicker(on_result=self.pick_output_folder_result)
-        self.page.overlay.extend([self.file_picker_templates, self.file_picker_output])
-        
-        self.setup_ui()
+def main(page: ft.Page):
+    page.title = "PostgreSQL View Exporter"
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.padding = 20
+    page.scroll = ft.ScrollMode.AUTO
     
-    def setup_ui(self):
-        """Настройка пользовательского интерфейса"""
-        self.page.title = "PostgreSQL View Exporter"
-        self.page.theme_mode = ft.ThemeMode.LIGHT
-        self.page.padding = 20
-        self.page.scroll = ft.ScrollMode.AUTO
-        
-               
-        self.page.add(
-            ft.Text("PostgreSQL View → Excel Экспортер", 
-                   size=24, weight=ft.FontWeight.BOLD),
-            
-            ft.Divider(),
-            
-            ft.Text("Настройки подключения к PostgreSQL", 
-                   size=18, weight=ft.FontWeight.BOLD),
-            
-            ft.Row([
-                ft.TextField(ref=self.db_host, label="Хост", width=200),
-                ft.TextField(ref=self.db_port, label="Порт", width=100),
-            ]),
-            
-            ft.Row([
-                ft.TextField(ref=self.db_name, label="База данных", width=200),
-                ft.TextField(ref=self.db_user, label="Пользователь", width=200),
-            ]),
-            
-            ft.TextField(ref=self.db_password, label="Пароль", 
-                        password=True, can_reveal_password=True, width=400),
-            
-            ft.Divider(),
-            
-            ft.Text("Настройки путей", size=18, weight=ft.FontWeight.BOLD),
-            
-            ft.Row([
-                ft.TextField(ref=self.templates_folder, label="Папка с шаблонами", 
-                            width=300, read_only=True),
-                ft.ElevatedButton(
-                    "Выбрать",
-                    on_click=lambda _: self.file_picker_templates.get_directory_path(
-                        dialog_title="Выберите папку с шаблонами"
-                    )
-                )
-            ]),
-            
-            ft.Row([
-                ft.TextField(ref=self.output_folder, label="Папка для результатов", 
-                            width=300, read_only=True),
-                ft.ElevatedButton(
-                    "Выбрать",
-                    on_click=lambda _: self.file_picker_output.get_directory_path(
-                        dialog_title="Выберите папку для результатов"
-                    )
-                )
-            ]),
-            
-            ft.Divider(),
-            
-            ft.Text("Выбор View для экспорта", size=18, weight=ft.FontWeight.BOLD),
-            
-            ft.Dropdown(
-                ref=self.view_dropdown,
-                label="Выберите View",
-                width=400,
-                # options=self.get_view_options(),
-                on_change=self.on_view_selected
-            ),
-            
-            ft.Divider(),
-            
-            ft.ElevatedButton(
-                ref=self.export_button,
-                text="🚀 Экспортировать выбранный View",
-                on_click=self.export_data,
-                style=ft.ButtonStyle(
-                    bgcolor=ft.Colors.BLUE,
-                    color=ft.Colors.WHITE,
-                    padding=20
-                ),
-                width=400,
-                disabled=True
-            ),
-            
-            ft.Divider(),
-            
-            ft.Row([
-                ft.ProgressRing(ref=self.progress_ring, visible=False, width=20, height=20),
-                ft.Text(ref=self.status_text, size=16, selectable=True, 
-                       text_align=ft.TextAlign.CENTER, expand=True),
-            ], alignment=ft.MainAxisAlignment.CENTER),
-            
-            ft.Text("Конфигурация view и шаблонов задается в файле .env", 
-                   size=12, color=ft.Colors.GREY)
+    # Загрузка конфигурации
+    config_loader = ConfigLoader()
+    config = config_loader.load_config()
+    available_views = config_loader.get_available_views()
+    
+    # Элементы UI
+    db_host = ft.TextField(label="Хост", value=config.db_host, width=200)
+    db_port = ft.TextField(label="Порт", value=config.db_port, width=100)
+    db_name = ft.TextField(label="База данных", value=config.db_name, width=200)
+    db_user = ft.TextField(label="Пользователь", value=config.db_user, width=200)
+    db_password = ft.TextField(label="Пароль", value=config.db_password,
+                              password=True, can_reveal_password=True, width=400)
+    
+    templates_folder = ft.TextField(label="Папка с шаблонами", 
+                                   value=config.templates_folder, width=300, read_only=True)
+    output_folder = ft.TextField(label="Папка для результатов", 
+                                value=config.output_folder, width=300, read_only=True)
+    
+    # Checkbox для выбора всех
+    select_all_checkbox = ft.Checkbox(
+        label="Выбрать все",
+        value=False,
+        on_change=lambda e: toggle_select_all(e)
+    )
+    
+    # Checkbox для каждого view
+    view_checkboxes = []
+    for view in available_views:
+        view_checkboxes.append(
+            ft.Checkbox(
+                label=view,
+                value=False,
+                data=view
+            )
         )
-        # Загрузка конфигурации
-        self.load_configuration()
-        self.view_dropdown.current.options =self.get_view_options()
-        self.page.update()
     
-    def load_configuration(self):
-        """Загрузка конфигурации из .env файла"""
-        try:
-            self.config = self.config_loader.load_config()
-            self.available_views = self.config_loader.get_available_views()
-            
-            # Установка значений по умолчанию
-            self.db_host.current.value = self.config.db_host
-            self.db_port.current.value = self.config.db_port
-            self.db_name.current.value = self.config.db_name
-            self.db_user.current.value = self.config.db_user
-            self.db_password.current.value = self.config.db_password
-            self.templates_folder.current.value = self.config.templates_folder
-            self.output_folder.current.value = self.config.output_folder
-            
-            self.update_status("✅ Конфигурация загружена из .env файла", ft.Colors.GREEN)
-            
-        except Exception as e:
-            self.update_status(f"❌ Ошибка загрузки конфигурации: {e}", ft.Colors.RED)
+    status_text = ft.Text("Готово к работе", size=16, color=ft.Colors.GREEN)
+    progress_ring = ft.ProgressRing(visible=False, width=20, height=20)
+    progress_bar = ft.ProgressBar(visible=False, width=400)
     
-    def get_view_options(self) -> List[ft.dropdown.Option]:
-        """Получение опций для dropdown с view"""
-        options = []
-        for view_name in self.available_views:
-            view_config = self.config_loader.get_view_config(view_name)
-            if view_config:
-                options.append(ft.dropdown.Option(
-                    key=view_name,
-                    text=f"{view_name} → {view_config.template_name}"
-                ))
-        return options
-    
-    def on_view_selected(self, e):
-        """Обработчик выбора view"""
-        if self.view_dropdown.current.value:
-            self.export_button.current.disabled = False
-        else:
-            self.export_button.current.disabled = True
-        self.page.update()
-    
-    def pick_templates_folder_result(self, e: ft.FilePickerResultEvent):
-        """Обработчик выбора папки с шаблонами"""
+    # File pickers
+    def pick_templates_result(e: ft.FilePickerResultEvent):
         if e.path:
-            self.templates_folder.current.value = e.path
-            self.templates_folder.current.update()
+            templates_folder.value = e.path
+            templates_folder.update()
     
-    def pick_output_folder_result(self, e: ft.FilePickerResultEvent):
-        """Обработчик выбора папки для результатов"""
+    def pick_output_result(e: ft.FilePickerResultEvent):
         if e.path:
-            self.output_folder.current.value = e.path
-            self.output_folder.current.update()
+            output_folder.value = e.path
+            output_folder.update()
     
-    def update_status(self, message: str, color: str = ft.Colors.BLACK, show_progress: bool = False):
-        """Обновление статуса"""
-        self.status_text.current.value = message
-        self.status_text.current.color = color
-        self.progress_ring.current.visible = show_progress
-        self.page.update()
+    file_picker_templates = ft.FilePicker(on_result=pick_templates_result)
+    file_picker_output = ft.FilePicker(on_result=pick_output_result)
+    page.overlay.extend([file_picker_templates, file_picker_output])
     
-    def export_data(self, e):
-        """Экспорт данных"""
-        selected_view = self.view_dropdown.current.value
-        if not selected_view:
-            self.update_status("❌ Выберите View для экспорта", ft.Colors.RED)
-            return
-        
-        # Получение текущих значений
-        host = self.db_host.current.value.strip()
-        port = self.db_port.current.value.strip()
-        database = self.db_name.current.value.strip()
-        username = self.db_user.current.value.strip()
-        password = self.db_password.current.value.strip()
-        templates_folder = self.templates_folder.current.value.strip()
-        output_folder = self.output_folder.current.value.strip()
-        
-        # Валидация
-        if not all([host, database, username, password]):
-            self.update_status("❌ Заполните все поля подключения к БД", ft.Colors.RED)
-            return
-        
-        if not all([templates_folder, output_folder]):
-            self.update_status("❌ Укажите папки для шаблонов и результатов", ft.Colors.RED)
-            return
-        
+    # Функция для выбора/снятия всех
+    def toggle_select_all(e):
+        for checkbox in view_checkboxes:
+            checkbox.value = select_all_checkbox.value
+        page.update()
+    
+    # Функция получения выбранных view
+    def get_selected_views():
+        return [checkbox.data for checkbox in view_checkboxes if checkbox.value]
+    
+    # Функция экспорта одного view
+    def export_single_view(view_name, templates_path, output_path):
         try:
-            self.update_status(f"⏳ Подготовка к экспорту {selected_view}...", ft.Colors.ORANGE, True)
-            
-            # Получение конфигурации view
-            view_config = self.config_loader.get_view_config(selected_view)
-            if not view_config:
-                self.update_status(f"❌ Конфигурация для {selected_view} не найдена", ft.Colors.RED)
-                return
-            
-            # Проверка существования шаблона
-            template_path = os.path.join(templates_folder, view_config.template_name)
-            if not os.path.exists(template_path):
-                self.update_status(f"❌ Шаблон не найден: {view_config.template_name}", ft.Colors.RED)
-                return
-            
-            # Генерация имени выходного файла
-            output_filename = self.config_loader.generate_output_filename(selected_view)
-            output_path = os.path.join(output_folder, output_filename)
-            
-            # Подключение к БД и экспорт
+            # Подключение к БД
             db_config = PostgreSQLConfig(
-                host=host,
-                database=database,
-                user=username,
-                password=password,
-                port=int(port) if port else 5432
+                host=db_host.value.strip(),
+                database=db_name.value.strip(),
+                user=db_user.value.strip(),
+                password=db_password.value.strip(),
+                port=int(db_port.value.strip()) if db_port.value.strip() else 5432
             )
             
             with PostgreSQLClient(db_config) as db_client:
-                self.update_status(f"⏳ Загрузка данных из {selected_view}...", ft.Colors.ORANGE, True)
-                
-                df = db_client.get_view_data(selected_view)
+                # Получение данных
+                df = db_client.get_view_data(view_name)
                 if df is None or df.empty:
-                    self.update_status(f"⚠️ {selected_view} не содержит данных", ft.Colors.ORANGE)
-                    return
+                    return f"❌ {view_name}: нет данных"
                 
-                self.update_status(f"⏳ Экспорт в {output_filename}...", ft.Colors.ORANGE, True)
+                # Конфигурация view
+                view_config = config_loader.get_view_config(view_name)
+                if not view_config:
+                    return f"❌ {view_name}: конфигурация не найдена"
+                
+                # Проверка шаблона
+                template_path = os.path.join(templates_path, view_config.template_name)
+                if not os.path.exists(template_path):
+                    return f"❌ {view_name}: шаблон не найден"
+                
+                # Генерация имени файла
+                output_filename = config_loader.generate_output_filename(view_name)
+                output_filepath = os.path.join(output_path, output_filename)
                 
                 # Экспорт в Excel
                 export_config = ExcelExportConfig(
                     template_path=template_path,
-                    output_path=output_path,
+                    output_path=output_filepath,
                     sheet_name="Data",
-                    start_row=self.config.default_start_row,
-                    auto_adjust_columns=self.config.auto_adjust_columns,
-                    preserve_formatting=self.config.preserve_formatting
+                    start_row=config.default_start_row,
+                    auto_adjust_columns=config.auto_adjust_columns,
+                    preserve_formatting=config.preserve_formatting
                 )
                 
                 exporter = ExcelExporter(export_config)
                 result = exporter.export_dataframe_to_template(df, clear_existing=True, include_headers=False)
                 
                 if result["success"]:
-                    self.update_status(
-                        f"✅ {selected_view} успешно экспортирован!\n"
-                        f"Файл: {output_filename}\n"
-                        f"Записей: {result['records_count']}",
-                        ft.Colors.GREEN
-                    )
+                    return f"✅ {view_name}: успешно ({result['records_count']} записей)"
                 else:
-                    self.update_status(f"❌ Ошибка экспорта: {result['message']}", ft.Colors.RED)
+                    return f"❌ {view_name}: ошибка экспорта"
                     
         except Exception as e:
-            self.update_status(f"❌ Ошибка: {str(e)}", ft.Colors.RED)
-
-def main(page: ft.Page):
-    app = PostgreSQLExporterApp(page)
+            return f"❌ {view_name}: {str(e)}"
+    
+    # Функции для обновления UI
+    def update_ui_status(message, color, show_progress=False, progress_value=None):
+        status_text.value = message
+        status_text.color = color
+        progress_ring.visible = show_progress
+        progress_bar.visible = show_progress
+        if progress_value is not None:
+            progress_bar.value = progress_value
+        export_button.disabled = show_progress
+        page.update()
+    
+    # Функция экспорта в отдельном потоке
+    def export_in_thread():
+        selected_views = get_selected_views()
+        if not selected_views:
+            update_ui_status("❌ Выберите хотя бы один View для экспорта", ft.Colors.RED)
+            return
+        
+        templates_path = templates_folder.value.strip()
+        output_path = output_folder.value.strip()
+        
+        if not all([templates_path, output_path]):
+            update_ui_status("❌ Укажите папки для шаблонов и результатов", ft.Colors.RED)
+            return
+        
+        # Настройка UI для процесса экспорта
+        update_ui_status(f"⏳ Начинаем экспорт {len(selected_views)} view...", ft.Colors.ORANGE, True, 0)
+        
+        results = []
+        total = len(selected_views)
+        
+        # Экспорт каждого view
+        for i, view_name in enumerate(selected_views):
+            progress = (i + 1) / total
+            update_ui_status(f"⏳ Экспортируем {view_name} ({i+1}/{total})...", ft.Colors.ORANGE, True, progress)
+            
+            result = export_single_view(view_name, templates_path, output_path)
+            results.append(result)
+        
+        # Завершение
+        success_count = sum(1 for r in results if r.startswith("✅"))
+        error_count = sum(1 for r in results if r.startswith("❌"))
+        
+        result_text = f"✅ Готово! Успешно: {success_count}, Ошибок: {error_count}"
+        color = ft.Colors.GREEN if error_count == 0 else ft.Colors.ORANGE
+        
+        update_ui_status(result_text, color, False, 1)
+        show_results_dialog("\n".join(results))
+    
+    # Диалог с результатами
+    def show_results_dialog(results_text):
+        def close_dialog(e):
+            results_dialog.open = False
+            page.update()
+        
+        results_dialog = ft.AlertDialog(
+            title=ft.Text("Результаты экспорта"),
+            content=ft.Column(
+                [
+                    ft.Text("Детали выполнения:", weight=ft.FontWeight.BOLD),
+                    ft.Text(results_text, selectable=True, size=14),
+                ],
+                tight=True,
+                scroll=ft.ScrollMode.AUTO,
+                height=300
+            ),
+            actions=[
+                ft.TextButton("Закрыть", on_click=close_dialog)
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+        
+        page.dialog = results_dialog
+        results_dialog.open = True
+        page.update()
+    
+    # Основная функция экспорта
+    def start_export(e):
+        # Запускаем экспорт в отдельном потоке, чтобы не блокировать UI
+        thread = threading.Thread(target=export_in_thread, daemon=True)
+        thread.start()
+    
+    # Кнопка экспорта
+    export_button = ft.ElevatedButton(
+        "🚀 Экспортировать выбранные",
+        on_click=start_export,
+        style=ft.ButtonStyle(
+            bgcolor=ft.Colors.BLUE,
+            color=ft.Colors.WHITE,
+            padding=20
+        ),
+        width=400
+    )
+    
+    # Сборка интерфейса
+    page.add(
+        ft.Text("PostgreSQL View → Excel Экспортер", 
+               size=24, weight=ft.FontWeight.BOLD),
+        
+        ft.Divider(),
+        
+        ft.Text("Настройки подключения", size=18, weight=ft.FontWeight.BOLD),
+        
+        ft.Row([db_host, db_port]),
+        ft.Row([db_name, db_user]),
+        db_password,
+        
+        ft.Divider(),
+        
+        ft.Text("Настройки путей", size=18, weight=ft.FontWeight.BOLD),
+        
+        ft.Row([
+            templates_folder,
+            ft.ElevatedButton(
+                "Выбрать",
+                on_click=lambda _: file_picker_templates.get_directory_path()
+            )
+        ]),
+        
+        ft.Row([
+            output_folder,
+            ft.ElevatedButton(
+                "Выбрать",
+                on_click=lambda _: file_picker_output.get_directory_path()
+            )
+        ]),
+        
+        ft.Divider(),
+        
+        ft.Text("Выбор View для экспорта", size=18, weight=ft.FontWeight.BOLD),
+        
+        ft.Row([
+            select_all_checkbox,
+            ft.Text(f"Доступно: {len(available_views)} view", color=ft.Colors.GREY)
+        ]),
+        
+        ft.Column(
+            view_checkboxes,
+            scroll=ft.ScrollMode.AUTO,
+            height=200,
+            width=400
+        ),
+        
+        ft.Divider(),
+        
+        export_button,
+        
+        ft.Divider(),
+        
+        ft.Column([
+            ft.Row([progress_ring, status_text], alignment=ft.MainAxisAlignment.CENTER),
+            progress_bar
+        ]),
+        
+        ft.Text("Выберите один или несколько View для экспорта", 
+               size=12, color=ft.Colors.GREY)
+    )
 
 if __name__ == "__main__":
     ft.app(target=main)
