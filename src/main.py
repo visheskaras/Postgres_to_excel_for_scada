@@ -37,12 +37,14 @@ def main(page: ft.Page):
         on_change=lambda e: toggle_select_all(e)
     )
     
-    # Checkbox для каждого view
+    # Checkbox для каждого view с отображением позиции
     view_checkboxes = []
     for view in available_views:
+        view_config = config_loader.get_view_config(view)
+        position_info = f" ({view_config.start_row},{view_config.start_col})" if view_config else ""
         view_checkboxes.append(
             ft.Checkbox(
-                label=view,
+                label=f"{view}{position_info}",
                 value=False,
                 data=view
             )
@@ -109,12 +111,13 @@ def main(page: ft.Page):
                 output_filename = config_loader.generate_output_filename(view_name)
                 output_filepath = os.path.join(output_path, output_filename)
                 
-                # Экспорт в Excel
+                # Экспорт в Excel с указанной позицией
                 export_config = ExcelExportConfig(
                     template_path=template_path,
                     output_path=output_filepath,
                     sheet_name="Data",
-                    start_row=config.default_start_row,
+                    start_row=view_config.start_row,
+                    start_col=view_config.start_col,
                     auto_adjust_columns=config.auto_adjust_columns,
                     preserve_formatting=config.preserve_formatting
                 )
@@ -123,7 +126,8 @@ def main(page: ft.Page):
                 result = exporter.export_dataframe_to_template(df, clear_existing=True, include_headers=False)
                 
                 if result["success"]:
-                    return f"✅ {view_name}: успешно ({result['records_count']} записей)"
+                    position_info = f" (позиция: {view_config.start_row},{view_config.start_col})"
+                    return f"✅ {view_name}: успешно {position_info} ({result['records_count']} записей)"
                 else:
                     return f"❌ {view_name}: ошибка экспорта"
                     
@@ -284,7 +288,7 @@ def main(page: ft.Page):
             progress_bar
         ]),
         
-        ft.Text("Выберите один или несколько View для экспорта", 
+        ft.Text("В скобках указана стартовая позиция (строка,столбец) для вставки данных", 
                size=12, color=ft.Colors.GREY)
     )
 

@@ -1,7 +1,6 @@
 import os
-import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -10,6 +9,8 @@ class ViewConfig:
     view_name: str
     template_name: str
     output_pattern: str
+    start_row: int
+    start_col: int
 
 @dataclass
 class AppConfig:
@@ -22,6 +23,7 @@ class AppConfig:
     output_folder: str
     views_config: Dict[str, ViewConfig]
     default_start_row: int
+    default_start_col: int
     auto_adjust_columns: bool
     preserve_formatting: bool
 
@@ -37,21 +39,21 @@ class ConfigLoader:
         # Базовые настройки
         db_host = os.getenv("DB_HOST", "localhost")
         db_port = os.getenv("DB_PORT", "5432")
-        db_name = os.getenv("DB_NAME", "")
-        db_user = os.getenv("DB_USER", "")
+        db_name = os.getenv("DB_NAME", "test_db")
+        db_user = os.getenv("DB_USER", "postgres")
         db_password = os.getenv("DB_PASSWORD", "")
         
         templates_folder = os.getenv("TEMPLATES_FOLDER", "./templates")
-
         output_folder = os.getenv("OUTPUT_FOLDER", "./output")
         
         # Параметры экспорта
         default_start_row = int(os.getenv("DEFAULT_START_ROW", "2"))
+        default_start_col = int(os.getenv("DEFAULT_START_COL", "1"))
         auto_adjust_columns = os.getenv("AUTO_ADJUST_COLUMNS", "true").lower() == "true"
         preserve_formatting = os.getenv("PRESERVE_FORMATTING", "true").lower() == "true"
         
         # Загрузка конфигурации view
-        views_config = self._load_views_config()
+        views_config = self._load_views_config(default_start_row, default_start_col)
         
         # Создание папок если не существуют
         os.makedirs(templates_folder, exist_ok=True)
@@ -67,18 +69,47 @@ class ConfigLoader:
             output_folder=output_folder,
             views_config=views_config,
             default_start_row=default_start_row,
+            default_start_col=default_start_col,
             auto_adjust_columns=auto_adjust_columns,
             preserve_formatting=preserve_formatting
         )
         
         return self.config
     
-    def _load_views_config(self) -> Dict[str, ViewConfig]:
-        """Загрузка конфигурации view из переменных окружения"""
+    def _parse_position(self, position_str: str, default_row: int, default_col: int) -> Tuple[int, int]:
+        """Парсит строку позиции в формате 'row,col' или 'cell'"""
+        if not position_str:
+            return default_row, default_col
+        
+        # Формат: "2,3" (строка, столбец)
+        if ',' in position_str:
+            try:
+                row, col = position_str.split(',', 1)
+                return int(row.strip()), int(col.strip())
+            except:
+                return default_row, default_col
+        
+        # Формат: "B3" (Excel-style)
+        elif position_str and any(c.isalpha() for c in position_str) and any(c.isdigit() for c in position_str):
+            try:
+                from openpyxl.utils import coordinate_to_tuple
+                row, col = coordinate_to_tuple(position_str.upper())
+                return row, col
+            except:
+                return default_row, default_col
+        
+        return default_row, default_col
+    
+    def _load_views_config(self, default_row: int, default_col: int) -> Dict[str, ViewConfig]:
+        """Загрузка конфигурации view из .env файла"""
         views_config = {}
         
         # Читаем напрямую из .env файла, чтобы избежать системных переменных
         try:
+            if not os.path.exists(self.env_path):
+                print(f"⚠️ Файл {self.env_path} не найден")
+                return views_config
+                
             with open(self.env_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
@@ -93,58 +124,51 @@ class ConfigLoader:
                         value = value.strip()
                         
                         # Пропускаем служебные переменные
-                        if key.startswith(("DB_", "TEMPLATES_", "OUTPUT_", "DEFAULT_", "AUTO_", "PRESERVE_")):
+                        if key.startswith(('DB_', 'TEMPLATES_', 'OUTPUT_', 'DEFAULT_', 'AUTO_', 'PRESERVE_')):
+                            continue
+                        
+                        # Пропускаем системные переменные (все заглавные)
+                        if key.isupper() and len(key) > 3:
                             continue
                         
                         # Проверяем, что значение содержит разделитель : и выглядит как конфигурация view
-                        if self._is_valid_view_config(value):
+                        if value and ':' in value and '.xlsx' in value:
                             try:
-                                template_name, output_pattern = value.split(':', 1)
-                                template_name = template_name.strip()
-                                output_pattern = output_pattern.strip()
+                                # Форматы:
+                                # 1. template.xlsx:output_pattern
+                                # 2. template.xlsx:output_pattern:start_row,start_col
+                                # 3. template.xlsx:output_pattern:B3 (Excel-style)
                                 
-                                # Дополнительная проверка на валидность
+                                parts = value.split(':')
+                                template_name = parts[0].strip()
+                                output_pattern = parts[1].strip()
+                                
+                                # Проверяем, что template_name заканчивается на .xlsx
+                                if not template_name.lower().endswith('.xlsx'):
+                                    continue
+                                
+                                # Парсим позицию (если указана)
+                                start_row, start_col = default_row, default_col
+                                if len(parts) >= 3:
+                                    start_row, start_col = self._parse_position(parts[2].strip(), default_row, default_col)
+                                
                                 if template_name and output_pattern:
-                                    view_config = ViewConfig(
+                                    views_config[key] = ViewConfig(
                                         view_name=key,
                                         template_name=template_name,
-                                        output_pattern=output_pattern
+                                        output_pattern=output_pattern,
+                                        start_row=start_row,
+                                        start_col=start_col
                                     )
-                                    views_config[key] = view_config
-                                    print(f"✅ Загружена конфигурация для view: {key} = {template_name}:{output_pattern}")
-                            except ValueError:
-                                print(f"⚠️ Неверный формат конфигурации для {key}: {value}")
-        except FileNotFoundError:
-            print(f"⚠️ Файл {self.env_path} не найден")
+                                    print(f"✅ Загружена конфигурация: {key} = {template_name}:{output_pattern} (позиция: {start_row},{start_col})")
+                            except Exception as e:
+                                print(f"⚠️ Ошибка парсинга конфигурации {key}: {value} - {e}")
+                                continue
         except Exception as e:
             print(f"⚠️ Ошибка чтения файла {self.env_path}: {e}")
         
-        if not views_config:
-            print("⚠️ Не найдено ни одной конфигурации view в .env файле")
-            print("ℹ️ Пример формата: SALES_REPORT=sales_template.xlsx:sales_report_{date}.xlsx")
-        
+        print(f"📊 Всего загружено view: {len(views_config)}")
         return views_config
-    
-    def _is_valid_view_config(self, value: str) -> bool:
-        """Проверяет, является ли значение валидной конфигурацией view"""
-        if ':' not in value:
-            return False
-        
-        # Проверяем, что значение не похоже на системный путь
-        if any(char in value for char in ['/', '\\', '$', '%']):
-            return False
-        
-        # Проверяем, что значение содержит расширение .xlsx
-        if '.xlsx' not in value:
-            return False
-        
-        # Проверяем, что после разделителя есть какой-то паттерн
-        parts = value.split(':', 1)
-        if len(parts) != 2:
-            return False
-        
-        template_part, output_part = parts
-        return bool(template_part.strip() and output_part.strip())    
     
     def get_available_views(self) -> List[str]:
         """Получение списка доступных view"""
@@ -162,12 +186,9 @@ class ConfigLoader:
         """Генерация имени выходного файла на основе паттерна"""
         config = self.get_view_config(view_name)
         if not config:
-            raise ValueError(f"Конфигурация для view '{view_name}' не найдена")
+            return f"{view_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         
-        # Замена плейсхолдеров
         filename = config.output_pattern
         filename = filename.replace('{date}', datetime.now().strftime('%Y-%m-%d'))
         filename = filename.replace('{timestamp}', datetime.now().strftime('%Y%m%d_%H%M%S'))
-        filename = filename.replace('{time}', datetime.now().strftime('%H%M%S'))
-        
         return filename

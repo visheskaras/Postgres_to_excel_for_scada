@@ -2,6 +2,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
 from typing import Optional, Dict, Any, List
 import os
 from datetime import datetime
@@ -96,7 +97,7 @@ class ExcelExporter:
             # Преобразование DataFrame в строки
             rows = dataframe_to_rows(df, index=False, header=include_headers)
             
-            # Вставка данных
+            # Вставка данных с указанной позиции
             for row_idx, row in enumerate(rows, self.config.start_row):
                 for col_idx, value in enumerate(row, self.config.start_col):
                     cell = self.worksheet.cell(row=row_idx, column=col_idx, value=value)
@@ -108,7 +109,7 @@ class ExcelExporter:
                                               end_color="D3D3D3", 
                                               fill_type="solid")
             
-            logger.info(f"Данные экспортированы: {len(df)} строк")
+            logger.info(f"Данные экспортированы: {len(df)} строк (позиция: {self.config.start_row},{self.config.start_col})")
             return True
             
         except Exception as e:
@@ -193,18 +194,9 @@ class ExcelExporter:
                 "success": True,
                 "message": "Данные успешно экспортированы",
                 "output_path": self.config.output_path,
-                "records_count": len(df)
+                "records_count": len(df),
+                "start_position": f"{self.config.start_row},{self.config.start_col}"
             }
             
         except Exception as e:
             return {"success": False, "message": f"Ошибка экспорта: {e}"}
-    
-    def __enter__(self):
-        """Контекстный менеджер"""
-        self.load_template()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Контекстный менеджер - автоматическое сохранение"""
-        if self.workbook:
-            self.save()
